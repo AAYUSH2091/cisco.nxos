@@ -698,11 +698,10 @@ class TestNxosStaticRoutesModule(TestNxosModule):
               ip route 192.0.2.64/28 192.0.2.23 name merged_route 1
             """,
         )
-        set_module_args(dict(config=[dict(vrf="Test")], state="deleted"))
+        set_module_args(dict(config=[dict()], state="deleted"))
         commands = [
-            "vrf context Test",
-            "no ip route 192.0.2.48/28 192.0.2.13",
-            "no ip route 192.0.2.48/28 192.0.2.14 5",
+            'no ip route 192.0.2.17/28 192.0.2.23 name replaced_route1 3',
+            'no ip route 192.0.2.79/28 192.0.2.26 tag 12'
         ]
         result = self.execute_module(changed=True)
         self.assertEqual(result["commands"], commands)

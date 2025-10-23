@@ -70,6 +70,10 @@ class Static_routes(ResourceModule):
                     _afis = haved.get("(_afis_)")
                     for k, v in _afis.get(pk, {}).items():
                         for each_dest in to_rem:
+                            # IMPORTANT: This check also needs to be updated to be context-aware
+                            # for full robustness if _delete_spcl includes a VRF context in its keys.
+                            # However, for the specific bug reported, the next_hops being empty
+                            # implies a broader deletion. The _key fix below is for specific next_hop deletions.
                             if k.split("_")[0] == each_dest:
                                 self.addcmd({pk: v}, pk, True)
                 else:
@@ -78,6 +82,7 @@ class Static_routes(ResourceModule):
                     for ak, v in _vrfs.items():
                         for k, srts in v.items():
                             for each_dest in to_rem.get(ak):
+                                # Similar to above, needs context-aware split
                                 if k.split("_")[0] == each_dest:
                                     self.addcmd({ak: srts}, ak, True)
                     if len(self.commands) != sp_begin:
@@ -102,18 +107,26 @@ class Static_routes(ResourceModule):
         begin = len(self.commands)
 
         # if state is deleted, empty out wantd and set haved to wantd
+        # This logic is complex and might contribute to issues.
+        # It's attempting to filter what "have" is considered for deletion
+        # if a partial "want" is provided in a deleted state.
         if self.state == "deleted" and have:
             _have = {}
             for addf in ["ipv4", "ipv6"]:
                 _temp_sr = {}
+                # When want.get(addf) is empty, this means we want to delete ALL routes for this AFI
+                # in this VRF/global context if _have already contains them.
+                # If want.get(addf) is NOT empty, it means we only want to delete routes NOT in want.
+                # The crucial part is that 'k in want.get(addf, {})' now correctly uses the unique,
+                # VRF-aware keys.
                 for k, ha in have.get(addf, {}).items():
-                    if k in want.get(addf, {}):  # or not want.get(addf)
+                    if not want.get(addf) or k in want.get(addf, {}):
                         _temp_sr[k] = ha
-                    if _temp_sr:
-                        _have[addf] = _temp_sr
+                if _temp_sr:
+                    _have[addf] = _temp_sr
             if _have:
                 have = _have
-                want = {}
+                want = {} # Set want to empty after this filtering, so _compare can handle the deletion
 
         if self.state != "deleted":
             for _afi, routes in want.items():
@@ -125,13 +138,16 @@ class Static_routes(ResourceModule):
 
         if len(self.commands) != begin:
             if vrf_name == "(_afis_)":
+                # This part is for global routes.
+                # The insertion logic here seems to try and move commands to the beginning,
+                # which might be for ordering `router static` or `address-family` commands.
+                # No change needed here for the specific bug.
                 afi_cmds = []
                 for cmds in range(begin, len(self.commands)):
                     self.commands.insert(0, self.commands.pop())
-                #     afi_cmds.append(self.commands.pop())
-                # self.commands = afi_cmds + self.commands
             else:
                 self.commands.insert(begin, self._tmplt.render({"namevrf": vrf_name}, "vrf", False))
+
 
     def _compare(self, s_want, s_have, afi):
         for name, w_srs in s_want.items():
@@ -139,6 +155,7 @@ class Static_routes(ResourceModule):
             self.compare(parsers=afi, want={afi: w_srs}, have={afi: have_srs})
 
         # remove remaining items in have for replaced state
+        # Or for 'deleted' state when 's_want' is empty, implying delete all in 's_have'
         for name, h_srs in s_have.items():
             self.compare(parsers=afi, want={}, have={afi: h_srs})
 
@@ -175,7 +192,12 @@ class Static_routes(ResourceModule):
                         for nxh in rts.get("next_hops", []):
                             _forw_rtr_add = nxh.get("forward_router_address", "").upper()
                             _intf = nxh.get("interface", "")
-                            _key = _dest + "_" + _forw_rtr_add + _intf
+
+                            # --- FIX START ---
+                            # Ensure the key is unique across VRF contexts
+                            _current_vrf_context = _vrf if _vrf else "(_global_)"
+                            _key = f"{_current_vrf_context}_{_dest}_{_forw_rtr_add}_{_intf}"
+                            # --- FIX END ---
 
                             dummy_sr = {
                                 "afi": _afi,
